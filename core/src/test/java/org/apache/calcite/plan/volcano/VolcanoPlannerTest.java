@@ -16,6 +16,28 @@
  */
 package org.apache.calcite.plan.volcano;
 
+import static org.apache.calcite.plan.volcano.PlannerTests.GoodSingleRule;
+import static org.apache.calcite.plan.volcano.PlannerTests.NoneLeafRel;
+import static org.apache.calcite.plan.volcano.PlannerTests.NoneSingleRel;
+import static org.apache.calcite.plan.volcano.PlannerTests.PHYS_CALLING_CONVENTION;
+import static org.apache.calcite.plan.volcano.PlannerTests.PhysLeafRel;
+import static org.apache.calcite.plan.volcano.PlannerTests.PhysLeafRule;
+import static org.apache.calcite.plan.volcano.PlannerTests.PhysSingleRel;
+import static org.apache.calcite.plan.volcano.PlannerTests.TestSingleRel;
+import static org.apache.calcite.plan.volcano.PlannerTests.newCluster;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+
+import com.google.common.collect.ImmutableList;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.apache.calcite.adapter.enumerable.EnumerableConvention;
 import org.apache.calcite.plan.Convention;
 import org.apache.calcite.plan.ConventionTraitDef;
@@ -31,33 +53,8 @@ import org.apache.calcite.rel.convert.ConverterRule;
 import org.apache.calcite.rel.logical.LogicalProject;
 import org.apache.calcite.rel.rules.ProjectRemoveRule;
 import org.apache.calcite.rex.RexInputRef;
-
-import com.google.common.collect.ImmutableList;
-
 import org.junit.Ignore;
 import org.junit.Test;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-
-import static org.apache.calcite.plan.volcano.PlannerTests.GoodSingleRule;
-import static org.apache.calcite.plan.volcano.PlannerTests.NoneLeafRel;
-import static org.apache.calcite.plan.volcano.PlannerTests.NoneSingleRel;
-import static org.apache.calcite.plan.volcano.PlannerTests.PHYS_CALLING_CONVENTION;
-import static org.apache.calcite.plan.volcano.PlannerTests.PhysLeafRel;
-import static org.apache.calcite.plan.volcano.PlannerTests.PhysLeafRule;
-import static org.apache.calcite.plan.volcano.PlannerTests.PhysSingleRel;
-import static org.apache.calcite.plan.volcano.PlannerTests.TestSingleRel;
-import static org.apache.calcite.plan.volcano.PlannerTests.newCluster;
-
-import static org.hamcrest.CoreMatchers.equalTo;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
 
 /**
  * Unit test for {@link VolcanoPlanner the optimizer}.
@@ -325,6 +322,59 @@ public class VolcanoPlannerTest {
     RelNode result = planner.chooseDelegate().findBestExp();
     assertTrue(result instanceof PhysLeafRel);
     PhysLeafRel resultLeaf = (PhysLeafRel) result;
+    assertEquals(
+        "c",
+        resultLeaf.label);
+  }
+
+  @Test public void testReentrancy() {
+    VolcanoPlanner planner = new VolcanoPlanner() {
+      @Override
+      protected VolcanoPlannerPhaseRuleMappingInitializer getPhaseRuleMappingInitializer() {
+        return new VolcanoPlannerPhaseRuleMappingInitializer() {
+          @Override
+          public void initialize(Map<VolcanoPlannerPhase, Set<String>> phaseRuleMap) {
+            // Disable all phases except OPTIMIZE by adding one useless rule name.
+            phaseRuleMap.get(VolcanoPlannerPhase.PRE_PROCESS_MDR).add("xxx");
+            phaseRuleMap.get(VolcanoPlannerPhase.PRE_PROCESS).add("PhysLeafRule");
+            phaseRuleMap.get(VolcanoPlannerPhase.CLEANUP).add("xxx");
+          }
+        };
+      }
+    };
+    planner.ambitious = true;
+    planner.addRelTraitDef(ConventionTraitDef.INSTANCE);
+
+    planner.addRule(new PhysLeafRule());
+    planner.addRule(new GoodSingleRule());
+    planner.addRule(new GoodRemoveSingleRule());
+
+    RelOptCluster cluster = newCluster(planner);
+    NoneLeafRel leafRel =
+        new NoneLeafRel(
+            cluster,
+            "a");
+    NoneSingleRel singleRel =
+        new NoneSingleRel(
+            cluster,
+            leafRel);
+    RelNode convertedRel =
+        planner.changeTraits(
+            singleRel,
+            cluster.traitSetOf(PHYS_CALLING_CONVENTION));
+
+    planner.setRoot(convertedRel);
+    RelNode result = planner.chooseDelegate().findBestExp();
+    assertTrue(result instanceof PhysLeafRel);
+    PhysLeafRel resultLeaf = (PhysLeafRel) result;
+    assertEquals(
+        "c",
+        resultLeaf.label);
+
+    planner.setRoot(convertedRel);
+    result = planner.chooseDelegate().findBestExp();
+    assertTrue(result instanceof PhysLeafRel);
+    resultLeaf = (PhysLeafRel) result;
     assertEquals(
         "c",
         resultLeaf.label);
